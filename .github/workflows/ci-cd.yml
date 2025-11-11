@@ -1,0 +1,57 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+          include-prerelease: true
+      - name: Restore
+        run: dotnet restore MentionSync.sln
+      - name: Build
+        run: dotnet build MentionSync.sln --configuration Release --no-restore
+      - name: Test
+        run: dotnet test MentionSync.sln --no-build --verbosity normal
+      - name: Publish API
+        run: dotnet publish src/MentionSync.API/MentionSync.API.csproj -c Release -o publish/api
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api
+          path: publish/api
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Deploy Bicep
+        uses: azure/CLI@v2
+        with:
+          azcliversion: 2.53.0
+          inlineScript: |
+            az deployment group create \
+              --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+              --template-file infra/azure/main.bicep \
+              --parameters appName=mentionsync environment=prod openAiApiKey=${{ secrets.OPENAI_API_KEY }} administratorPassword=${{ secrets.DB_ADMIN_PASSWORD }}
+      - name: Deploy Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: mentionsync-prod-api
+          package: publish/api
